@@ -18,6 +18,9 @@ class PlaylistCopierApp(tk.Tk):
         self.dest_var = tk.StringVar()
         self.dry_run_var = tk.BooleanVar(value=False)
         self.progress_var = tk.IntVar(value=0)
+        self.normalize_var = tk.BooleanVar(value=False)
+        self.lufs_var = tk.StringVar(value="-14")
+        self.codec_var = tk.StringVar(value="auto")
 
         self._build_ui()
         self.worker_thread: threading.Thread | None = None
@@ -46,30 +49,62 @@ class PlaylistCopierApp(tk.Tk):
             self, text="Dry run (bez kopiranja)", variable=self.dry_run_var
         ).grid(row=2, column=0, columnspan=3, sticky="w", **padding)
 
+        normalize_frame = ttk.Frame(self)
+        normalize_frame.grid(row=3, column=0, columnspan=3, sticky="we", **padding)
+        ttk.Checkbutton(
+            normalize_frame,
+            text="Normalizuj (LUFS)",
+            variable=self.normalize_var,
+            command=self._toggle_normalize_entry,
+        ).grid(row=0, column=0, sticky="w")
+        self.lufs_entry = ttk.Entry(normalize_frame, width=6, textvariable=self.lufs_var, state="disabled")
+        self.lufs_entry.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(normalize_frame, text="npr. -14").grid(row=0, column=2, sticky="w", padx=(6, 0))
+        ttk.Label(normalize_frame, text="Codec/bitrate:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.codec_combo = ttk.Combobox(
+            normalize_frame,
+            textvariable=self.codec_var,
+            state="disabled",
+            values=[
+                "auto",
+                "mp3-192",
+                "mp3-256",
+                "aac-192",
+                "aac-256",
+                "flac",
+                "wav",
+            ],
+            width=12,
+        )
+        self.codec_combo.grid(row=1, column=1, sticky="w", pady=(6, 0), padx=(8, 0))
+        ttk.Label(normalize_frame, text="primenjuje se na izlazni fajl").grid(
+            row=1, column=2, sticky="w", pady=(6, 0), padx=(6, 0)
+        )
+
         self.run_button = ttk.Button(self, text="Pokreni kopiranje", command=self._on_run)
-        self.run_button.grid(row=3, column=0, columnspan=2, sticky="we", **padding)
+        self.run_button.grid(row=4, column=0, columnspan=2, sticky="we", **padding)
 
         self.cancel_button = ttk.Button(self, text="Otkaži", command=self._on_cancel, state="disabled")
-        self.cancel_button.grid(row=3, column=2, sticky="we", **padding)
+        self.cancel_button.grid(row=4, column=2, sticky="we", **padding)
 
-        ttk.Label(self, text="Napredak:").grid(row=4, column=0, sticky="w", **padding)
+        ttk.Label(self, text="Napredak:").grid(row=5, column=0, sticky="w", **padding)
         self.progress = ttk.Progressbar(
             self, maximum=1, variable=self.progress_var, mode="determinate"
         )
-        self.progress.grid(row=4, column=1, columnspan=2, sticky="we", **padding)
+        self.progress.grid(row=5, column=1, columnspan=2, sticky="we", **padding)
 
-        ttk.Label(self, text="Log:").grid(row=4, column=0, sticky="w", **padding)
+        ttk.Label(self, text="Log:").grid(row=6, column=0, sticky="w", **padding)
         self.log_box = ScrolledText(self, height=10, wrap="word")
-        self.log_box.grid(row=5, column=0, columnspan=3, sticky="nsew", **padding)
+        self.log_box.grid(row=7, column=0, columnspan=3, sticky="nsew", **padding)
         self.log_box.configure(state="disabled")
 
         self.status_var = tk.StringVar(value="Spremno")
         ttk.Label(self, textvariable=self.status_var).grid(
-            row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 10)
+            row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 10)
         )
 
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(5, weight=1)
+        self.rowconfigure(7, weight=1)
 
     def _choose_playlist(self) -> None:
         path = filedialog.askopenfilename(
@@ -99,6 +134,16 @@ class PlaylistCopierApp(tk.Tk):
             messagebox.showwarning("Nedostaje folder", "Izaberi odredišni folder.")
             return
 
+        normalize_lufs: float | None = None
+        codec_preset = "auto"
+        if self.normalize_var.get():
+            try:
+                normalize_lufs = float(self.lufs_var.get())
+            except ValueError:
+                messagebox.showwarning("Pogrešna vrednost", "Unesi broj (npr. -14) za LUFS.")
+                return
+            codec_preset = self.codec_var.get() or "auto"
+
         self._log(f"Čitam playlistu: {playlist_path}")
         try:
             tracks = read_playlist(playlist_path)
@@ -114,7 +159,7 @@ class PlaylistCopierApp(tk.Tk):
         # Pokrećemo kopiranje u pozadinskom threadu da GUI ostane responzivan
         self.worker_thread = threading.Thread(
             target=self._run_copy,
-            args=(tracks, dest_path),
+            args=(tracks, dest_path, normalize_lufs, codec_preset),
             daemon=True,
         )
         self.worker_thread.start()
@@ -133,7 +178,7 @@ class PlaylistCopierApp(tk.Tk):
         self.cancel_button.configure(state="normal")
         self.cancel_event = threading.Event()
 
-    def _run_copy(self, tracks, dest_path: Path) -> None:
+    def _run_copy(self, tracks, dest_path: Path, normalize_lufs: float | None, codec_preset: str) -> None:
         def progress_cb(index: int, total: int, src: Path, dst: Path | None, status: str) -> None:
             # Osiguravamo da UI update ide kroz main thread
             self.after(0, self._on_progress, index, total, src, dst, status)
@@ -145,6 +190,8 @@ class PlaylistCopierApp(tk.Tk):
                 dry_run=self.dry_run_var.get(),
                 progress_callback=progress_cb,
                 cancel_event=self.cancel_event,
+                normalize_lufs=normalize_lufs,
+                codec_preset=codec_preset,
             )
             cancelled = self.cancel_event.is_set()
             self.after(0, self._on_finished, copied, missing, cancelled)
@@ -157,6 +204,8 @@ class PlaylistCopierApp(tk.Tk):
 
         if status == "ok":
             self._log(f"[OK] {src} -> {dst}")
+        elif status == "normalized":
+            self._log(f"[NORMALIZED] {src} -> {dst}")
         elif status == "dry-run":
             self._log(f"[DRY RUN] {src} -> {dst}")
         elif status == "missing":
@@ -193,6 +242,11 @@ class PlaylistCopierApp(tk.Tk):
         if self.cancel_event:
             self.cancel_event.set()
             self.status_var.set("Prekid u toku...")
+
+    def _toggle_normalize_entry(self) -> None:
+        state = "normal" if self.normalize_var.get() else "disabled"
+        self.lufs_entry.configure(state=state)
+        self.codec_combo.configure(state=state)
 
 
 def main() -> None:

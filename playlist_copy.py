@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import shutil
+import subprocess
 import threading
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Tuple
@@ -26,6 +27,18 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Prođi kroz listu bez kopiranja fajlova (prikazuje šta bi uradio)",
+    )
+    parser.add_argument(
+        "--normalize-lufs",
+        type=float,
+        default=None,
+        help="Normalizuj glasnoću na zadati LUFS (zahteva ffmpeg, npr. -14)",
+    )
+    parser.add_argument(
+        "--codec-preset",
+        choices=list(CODEC_PRESETS.keys()),
+        default="auto",
+        help="Codec/bitrate preset za izlaz (primenjuje se pri normalizaciji)",
     )
     return parser.parse_args()
 
@@ -94,6 +107,16 @@ def _parse_pls(path: Path) -> List[Path]:
 
 ProgressCallback = Callable[[int, int, Path, Optional[Path], str], None]
 
+CODEC_PRESETS: dict[str, Optional[list[str]]] = {
+    "auto": None,  # bira se prema ekstenziji fajla
+    "mp3-192": ["-c:a", "libmp3lame", "-b:a", "192k"],
+    "mp3-256": ["-c:a", "libmp3lame", "-b:a", "256k"],
+    "aac-192": ["-c:a", "aac", "-b:a", "192k"],
+    "aac-256": ["-c:a", "aac", "-b:a", "256k"],
+    "flac": ["-c:a", "flac"],
+    "wav": ["-c:a", "pcm_s16le"],
+}
+
 
 def copy_tracks(
     tracks: Iterable[Path],
@@ -101,6 +124,8 @@ def copy_tracks(
     dry_run: bool = False,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_event: Optional[threading.Event] = None,
+    normalize_lufs: Optional[float] = None,
+    codec_preset: str = "auto",
 ) -> Tuple[int, int]:
     destination.mkdir(parents=True, exist_ok=True)
 
@@ -133,11 +158,18 @@ def copy_tracks(
                 progress_callback(index, total, track, target, "dry-run")
             continue
 
-        shutil.copy2(track, target)
+        if normalize_lufs is not None:
+            codec_args = _codec_from_preset(codec_preset, target.suffix.lower())
+            _normalize_track(track, target, normalize_lufs, codec_args)
+            status = "normalized"
+        else:
+            shutil.copy2(track, target)
+            status = "ok"
+
         copied += 1
-        print(f"[OK] {track} -> {target}")
+        print(f"[{status.upper()}] {track} -> {target}")
         if progress_callback:
-            progress_callback(index, total, track, target, "ok")
+            progress_callback(index, total, track, target, status)
 
     return copied, missing
 
@@ -159,12 +191,72 @@ def _ensure_unique_name(target: Path) -> Path:
         counter += 1
 
 
+def _normalize_track(src: Path, dst: Path, lufs: float, codec_args: Optional[list[str]]) -> None:
+    """
+    Normalizuje glasnoću koristeći ffmpeg loudnorm filter.
+    Re-enkodira audio pa može potrajati i promeniti veličinu fajla.
+    Zahteva instaliran ffmpeg u PATH.
+    """
+    codec_args = codec_args or _codec_for_ext(dst.suffix.lower())
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(src),
+        "-af",
+        f"loudnorm=I={lufs}:TP=-1.5:LRA=11",
+        *codec_args,
+        str(dst),
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "ffmpeg nije pronađen. Instaliraj ffmpeg da bi radio normalize."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        msg = exc.stderr.decode("utf-8", errors="ignore")
+        raise RuntimeError(f"ffmpeg greška: {msg}") from exc
+
+
+def _codec_for_ext(ext: str) -> list[str]:
+    """
+    Bira odgovarajući audio codec za izlazni format.
+    """
+    if ext == ".mp3":
+        return ["-c:a", "libmp3lame", "-b:a", "192k"]
+    if ext in {".m4a", ".aac"}:
+        return ["-c:a", "aac", "-b:a", "192k"]
+    if ext == ".flac":
+        return ["-c:a", "flac"]
+    if ext == ".wav":
+        return ["-c:a", "pcm_s16le"]
+    # Default na AAC ako ne prepoznamo
+    return ["-c:a", "aac", "-b:a", "192k"]
+
+
+def _codec_from_preset(preset: str, ext: str) -> list[str]:
+    preset_lower = (preset or "auto").lower()
+    if preset_lower in CODEC_PRESETS and CODEC_PRESETS[preset_lower] is not None:
+        return CODEC_PRESETS[preset_lower] or _codec_for_ext(ext)
+    # auto ili nepoznato -> prema ekstenziji
+    return _codec_for_ext(ext)
+
+
 def main() -> None:
     args = parse_args()
     tracks = read_playlist(args.playlist)
 
     print(f"Pronađeno fajlova: {len(tracks)}")
-    copied, missing = copy_tracks(tracks, args.destination, dry_run=args.dry_run)
+    copied, missing = copy_tracks(
+        tracks,
+        args.destination,
+        dry_run=args.dry_run,
+        normalize_lufs=args.normalize_lufs,
+        codec_preset=args.codec_preset,
+    )
 
     print(f"Uspešno: {copied}")
     print(f"Nedostaje: {missing}")

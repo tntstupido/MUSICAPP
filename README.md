@@ -25,6 +25,8 @@ Nema eksternih zavisnosti (koristi standardnu biblioteku).
 
 Opcije:
 - `--dry-run` samo prikaže šta bi se kopiralo, bez pisanja fajlova.
+- `--normalize-lufs <broj>` normalizuje glasnoću na zadati LUFS (npr. `--normalize-lufs -14`, zahteva sistemski `ffmpeg`).
+- `--codec-preset <preset>` bira codec/bitrate pri normalizaciji: `auto`, `mp3-192`, `mp3-256`, `aac-192`, `aac-256`, `flac`, `wav` (default `auto` = prema ekstenziji fajla).
 
 Ako fajl već postoji u odredištu, skripta dodaje sufiks `_1`, `_2`, itd. kako bi sačuvala sve kopije.
 
@@ -37,8 +39,13 @@ Ako fajl već postoji u odredištu, skripta dodaje sufiks `_1`, `_2`, itd. kako 
 GUI dozvoljava:
 - izbor M3U/PLS fajla i odredišnog foldera preko dijaloga,
 - checkbox za `Dry run`,
+- opciono normalizovanje glasnoće (LUFS) i izbor codec/bitrate preseta (zahteva `ffmpeg`),
 - progress bar i dugme „Otkaži“ za duže operacije,
 - log prozor sa statusom i upozorenjima (npr. ako nedostaju fajlovi).
+
+Primera radi, ovako izgleda GUI u radu:
+
+![GUI primer](preview/preview.png)
 
 ## Kako radi
 
