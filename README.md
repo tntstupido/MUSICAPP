@@ -63,6 +63,17 @@ pyinstaller --onefile --name playlist-copier gui.py
 
 Izvršni fajl će biti u `dist/playlist-copier`. Možeš ga pokrenuti direktno (tkinter biblioteka mora biti prisutna u sistemu, npr. `python3-tk` paket na Debian/Ubuntu).
 
+## Pakovanje u izvršni fajl (Windows)
+
+```bash
+py -m venv venv
+venv\Scripts\activate
+pip install pyinstaller
+pyinstaller --onefile --name playlist-copier gui.py
+```
+
+Rezultat je `dist\playlist-copier.exe`. Ako koristiš normalizaciju, instaliraj `ffmpeg` i dodaj ga u PATH ili stavi `ffmpeg.exe` pored izvršnog fajla.***
+
 ## Kratki primer (test)
 
 ```bash
